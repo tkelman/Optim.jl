@@ -216,6 +216,7 @@ let
    @test Optim.g_tol(res) == 1e-12
    @test Optim.iteration_limit_reached(res) == true
    @test Optim.initial_state(res) == [0.0; 0.0]
+   @test !haskey(Optim.trace(res)[1].metadata,"x")
    @test haskey(Optim.trace(res_ext)[1].metadata,"x")
    # just testing if it runs
    Optim.trace(res)
