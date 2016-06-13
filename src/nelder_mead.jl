@@ -41,13 +41,24 @@ macro nmtrace()
     end
 end
 
-immutable NelderMead <: Optimizer
-    a::Float64
-    g::Float64
-    b::Float64
+fixed_parameters(n) = (1.0, 2.0, 0.5, 0.5)
+adaptive_parameters(n) = (1.0, 1.0 + 2/n, 0.75 - 1/2n, 1.0 - 1/n)
+
+function relative_simplex{T}(initial_x::Array{T}; a = 0.025, b = 1.5)
+    n = length(initial_x)
+    initial_simplex = repmat(initial_x, 1, n+1)
+    for j = 1:n
+        initial_simplex[j, j+1] = b * initial_simplex[j, j+1] + a
+    end
+    initial_simplex
 end
 
-NelderMead(; a::Real = 1.0, g::Real = 2.0, b::Real = 0.5) = NelderMead(a, g, b)
+immutable NelderMead <: Optimizer
+    parameters::Function
+    initial_simplex::Function
+end
+
+NelderMead(; parameters = adaptive_parameters, initial_simplex = relative_simplex) = NelderMead(parameters, initial_simplex)
 
 function print_header(mo::NelderMead, options::OptimizationOptions)
     if options.show_trace
@@ -78,21 +89,21 @@ end
 function optimize{T}(f::Function,
                      initial_x::Vector{T},
                      mo::NelderMead,
-                     o::OptimizationOptions;
-                     initial_step::Vector{T} = ones(T,length(initial_x)))
+                     o::OptimizationOptions)
+
     # Print header if show_trace is set
     print_header(mo, o)
 
-    # Set up a simplex of points around starting value
+    # Set up a simplex of points
     m = length(initial_x)
     if m == 1
         error("Use optimize(f, scalar, scalar) for 1D problems")
     end
     n = m + 1
-    p = repmat(initial_x, 1, n)
-    @simd for i in 1:m
-        @inbounds p[i, i] += initial_step[i]
-    end
+    p = mo.initial_simplex(initial_x)
+
+    # Setup parameters
+    α, β, γ, δ = mo.parameters(n)
 
     # Count function calls
     f_calls = 0
@@ -156,7 +167,7 @@ function optimize{T}(f::Function,
 
         # Compute a reflection
         @simd for j in 1:m
-            @inbounds p_star[j] = (1 + mo.a) * p_bar[j] - mo.a * p_h[j]
+            @inbounds p_star[j] = (1 + α) * p_bar[j] - α * p_h[j]
         end
         y_star = f(p_star)
         f_calls += 1
@@ -164,7 +175,7 @@ function optimize{T}(f::Function,
         if y_star < y_l
             # Compute an expansion
             @simd for j in 1:m
-                @inbounds p_star_star[j] = mo.g * p_star[j] + (1 - mo.g) * p_bar[j]
+                @inbounds p_star_star[j] = β * p_star[j] + (1 - β) * p_bar[j]
             end
             y_star_star = f(p_star_star)
             f_calls += 1
@@ -190,7 +201,7 @@ function optimize{T}(f::Function,
 
                 # Compute a contraction
                 @simd for j in 1:m
-                    @inbounds p_star_star[j] = mo.b * p_h[j] + (1 - mo.b) * p_bar[j]
+                    @inbounds p_star_star[j] = γ * p_h[j] + (1 - γ) * p_bar[j]
                 end
                 y_star_star = f(p_star_star)
                 f_calls += 1
@@ -198,7 +209,7 @@ function optimize{T}(f::Function,
                 if y_star_star > y_h
                     for i = 1:n
                         @simd for j in 1:m
-                            @inbounds p[j, i] = (p[j, i] + p_l[j]) / 2.0
+                            @inbounds p[j, i] = (1 - δ) *  p_l[j] + δ * p[j, i]
                         end
                         @inbounds y[i] = f(p[:, i])
                     end
