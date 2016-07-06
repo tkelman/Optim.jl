@@ -160,7 +160,7 @@ function optimize{T}(f::Function,
             if i != h
                 tmpindex += 1
                 @inbounds y_bar[tmpindex] = y[i]
-                LinAlg.axpy!(1, view(p, :, i), p_bar)
+                LinAlg.axpy!(1, p[:, i], p_bar)
             end
         end
         scale!(p_bar, 1/m)
