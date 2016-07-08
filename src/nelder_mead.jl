@@ -1,3 +1,65 @@
+abstract Simplexer
+
+immutable RelativeSimplex <: Simplexer
+    a::Float64
+    b::Float64
+end
+
+RelativeSimplex(;a = 0.025, b = 0.5) = RelativeSimplex(a, b)
+
+immutable MatlabSimplex <: Simplexer
+    a::Float64
+    b::Float64
+end
+
+function simplexer{T}(S::RelativeSimplex, initial_x::Array{T})
+    n = length(initial_x)
+    initial_simplex = Array{T}[copy(initial_x) for i = 1:n+1]
+    for j = 1:n
+        initial_simplex[j+1][j] = (1+S.b) * initial_simplex[j+1][j] + S.a
+    end
+    initial_simplex
+end
+
+MatlabSimplex(;a = 0.00025, b = 0.05) = MatlabSimplex(a, b)
+function simplexer{T}(A::MatlabSimplex, initial_x::Array{T})
+    n = length(initial_x)
+    initial_simplex = Array{T}[initial_x for i = 1:n+1]
+    for j = 1:n
+        initial_simplex[j+1][j] += initial_simplex[j+1][j] == zero(T) ? S.b * initial_simplex[j+1][j] : S.a
+    end
+    initial_simplex
+end
+
+abstract NMParameters
+
+immutable AdaptiveParameters <: NMParameters
+    α::Float64
+    β::Float64
+    γ::Float64
+    δ::Float64
+end
+
+AdaptiveParameters(;  α = 1.0, β = 1.0, γ = 0.75 , δ = 1.0) = AdaptiveParameters(α, β, γ, δ)
+parameters(P::AdaptiveParameters, n::Integer) = (P.α, P.β + 2/n, P.γ - 1/2n, P.δ - 1/n)
+
+immutable FixedParameters <: NMParameters
+    α::Float64
+    β::Float64
+    γ::Float64
+    δ::Float64
+end
+
+FixedParameters(; α = 1.0, β = 2.0, γ = 0.5, δ = 0.5) = FixedParameters(α, β, γ, δ)
+parameters(P::FixedParameters, n::Integer) = (P.α, P.β, P.γ, P.δ)
+
+
+immutable NelderMead{Ts <: Simplexer, Tp <: NMParameters} <: Optimizer
+    S::Ts
+    P::Tp
+end
+
+NelderMead(; S = RelativeSimplex(), P = AdaptiveParameters()) = NelderMead(S, P)
 
 # centroid except h-th vertex
 function centroid!(c, simplex, h=0)
@@ -42,25 +104,6 @@ macro nmtrace()
     end
 end
 
-fixed_parameters(n) = (1.0, 2.0, 0.5, 0.5)
-adaptive_parameters(n::Integer) = (1.0, 1.0 + 2/n, 0.75 - 1/2n, 1.0 - 1/n)
-
-function relative_simplex{T}(initial_x::Array{T}; a::Float64 = 0.025, b::Float64 = 0.5)
-    n = length(initial_x)
-    initial_simplex = repmat(initial_x, 1, n+1)
-    for j = 1:n
-        initial_simplex[j, j+1] += b * initial_simplex[j, j+1] + a
-    end
-    initial_simplex
-end
-
-immutable NelderMead <: Optimizer
-    parameters::Function
-    initial_simplex::Function
-end
-
-NelderMead(; parameters = adaptive_parameters, initial_simplex = relative_simplex) = NelderMead(parameters, initial_simplex)
-
 function print_header(mo::NelderMead, options::OptimizationOptions)
     if options.show_trace
         @printf "Iter     Function value    √(Σ(yᵢ-ȳ)²)/n \n"
@@ -101,9 +144,7 @@ function optimize{T}(f::Function,
         error("Use optimize(f, scalar, scalar) for 1D problems")
     end
     n = m + 1
-    p = mo.initial_simplex(initial_x)
-
-    simplex = Vector{T}[p[:, i] for i = 1:size(p, 2)]
+    simplex = simplexer(mo.S, initial_x)
     f_simplex = T[f(s) for s in simplex]
 
     # Get the indeces that correspond to the ordering of the f values
@@ -117,7 +158,7 @@ function optimize{T}(f::Function,
     f_calls = n
 
     # Setup parameters
-    α, β, γ, δ = mo.parameters(m)
+    α, β, γ, δ = parameters(mo.P, m)
     # Count iterations
     iteration = 0
 
@@ -158,8 +199,8 @@ function optimize{T}(f::Function,
         f_second_highest = f_simplex[i_order[m]]
         f_highest = f_simplex[ i_order[n]]
         # Compute a reflection
-        for j in 1:m
-            @inbounds x_reflect[j] = x_centroid[j] + α * (x_centroid[j]-x_highest[j])
+        @inbounds for j in 1:m
+            x_reflect[j] = x_centroid[j] + α * (x_centroid[j]-x_highest[j])
         end
 
         f_reflect = f(x_reflect)
@@ -227,9 +268,9 @@ function optimize{T}(f::Function,
 
         if shrink
             for i = 2:n
-                o = i_order[i]
-                copy!(simplex[o], x_lowest + δ*(simplex[o]-x_lowest))
-                f_simplex[o] = f(simplex[o])
+                ord = i_order[i]
+                copy!(simplex[ord], x_lowest + δ*(simplex[ord]-x_lowest))
+                f_simplex[ord] = f(simplex[ord])
             end
             step_type = "shrink"
             i_order = sortperm(f_simplex)
