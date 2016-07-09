@@ -4,27 +4,26 @@ immutable RelativeSimplex <: Simplexer
     a::Float64
     b::Float64
 end
-
 RelativeSimplex(;a = 0.025, b = 0.5) = RelativeSimplex(a, b)
 
-immutable MatlabSimplex <: Simplexer
-    a::Float64
-    b::Float64
-end
-
-function simplexer{T}(S::RelativeSimplex, initial_x::Array{T})
+function simplexer{T, N}(S::RelativeSimplex, initial_x::Array{T, N})
     n = length(initial_x)
-    initial_simplex = Array{T}[copy(initial_x) for i = 1:n+1]
+    initial_simplex = Array{T, N}[copy(initial_x) for i = 1:n+1]
     for j = 1:n
         initial_simplex[j+1][j] = (1+S.b) * initial_simplex[j+1][j] + S.a
     end
     initial_simplex
 end
 
+immutable MatlabSimplex <: Simplexer
+    a::Float64
+    b::Float64
+end
 MatlabSimplex(;a = 0.00025, b = 0.05) = MatlabSimplex(a, b)
-function simplexer{T}(A::MatlabSimplex, initial_x::Array{T})
+
+function simplexer{T, N}(A::MatlabSimplex, initial_x::Array{T, N})
     n = length(initial_x)
-    initial_simplex = Array{T}[initial_x for i = 1:n+1]
+    initial_simplex = Array{T, N}[initial_x for i = 1:n+1]
     for j = 1:n
         initial_simplex[j+1][j] += initial_simplex[j+1][j] == zero(T) ? S.b * initial_simplex[j+1][j] : S.a
     end
@@ -62,21 +61,18 @@ end
 NelderMead(; S = RelativeSimplex(), P = AdaptiveParameters()) = NelderMead(S, P)
 
 # centroid except h-th vertex
-function centroid!(c, simplex, h=0)
+function centroid!{T}(c::Array{T}, simplex, h=0)
     n = length(c)
-    fill!(c, 0.0)
+    fill!(c, zero(T))
     @inbounds for i in 1:n+1
         if i != h
             xi = simplex[i]
-            for j in 1:n
+            @simd for j in 1:n
                 c[j] += xi[j]
             end
         end
     end
-    for j in 1:n
-        c[j] /= n
-    end
-    c
+    scale!(c, 1/n)
 end
 
 centroid(simplex, h) = centroid!(similar(simplex[1]), simplex, h)
@@ -145,7 +141,10 @@ function optimize{T}(f::Function,
     end
     n = m + 1
     simplex = simplexer(mo.S, initial_x)
-    f_simplex = T[f(s) for s in simplex]
+    f_simplex = zeros(T, n)
+    @inbounds for i in 1:length(simplex)
+        f_simplex[i] = f(simplex[i])
+    end
 
     # Get the indeces that correspond to the ordering of the f values
     # at the vertices. i_order[1] is the index in the simplex of the vertex
@@ -232,7 +231,7 @@ function optimize{T}(f::Function,
             copy!(simplex[ i_order[n]], x_reflect)
             @inbounds f_simplex[ i_order[n]] = f_reflect
             step_type = "reflection"
-            i_order = sortperm(f_simplex)
+            sortperm!(i_order, f_simplex)
         else
             if f_reflect < f_highest
                 # Outside contraction
@@ -244,7 +243,7 @@ function optimize{T}(f::Function,
                     copy!(simplex[ i_order[n]], x_cache)
                     @inbounds f_simplex[ i_order[n]] = f_outside_contraction
                     step_type = "outside contraction"
-                    i_order = sortperm(f_simplex)
+                    sortperm!(i_order, f_simplex)
 
                 else
                     shrink = true
@@ -259,7 +258,7 @@ function optimize{T}(f::Function,
                     copy!(simplex[ i_order[n]], x_cache)
                     @inbounds f_simplex[ i_order[n]] = f_inside_contraction
                     step_type = "inside contraction"
-                    i_order = sortperm(f_simplex)
+                    sortperm!(i_order, f_simplex)
                 else
                     shrink = true
                 end
@@ -273,7 +272,7 @@ function optimize{T}(f::Function,
                 f_simplex[ord] = f(simplex[ord])
             end
             step_type = "shrink"
-            i_order = sortperm(f_simplex)
+            sortperm!(i_order, f_simplex)
         end
 
         f_x_previous, f_x = f_x, nmobjective(f_simplex, m, n)
@@ -284,7 +283,7 @@ function optimize{T}(f::Function,
         end
     end
 
-    i_order = sortperm(f_simplex)
+    sortperm!(i_order, f_simplex)
     x_centroid_min = centroid(simplex,  i_order[n])
     f_centroid_min = f(x_centroid)
     f_calls += 1
